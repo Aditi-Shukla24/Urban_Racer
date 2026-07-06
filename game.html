@@ -8,14 +8,44 @@
         * { margin: 0; padding: 0; box-sizing: border-box; overflow: hidden; }
         body, html { width: 100%; height: 100%; background: #111; font-family: monospace; }
         #gameCanvas { display: block; margin: 0 auto; background: #1a1a1a; }
-        #ui { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 20px; pointer-events: none; text-align: center; }
+        
+        #ui { 
+            position: absolute; 
+            top: 20px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            color: #fff; 
+            pointer-events: none; 
+            width: 100%; 
+            max-width: 460px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            padding: 0 10px; 
+            z-index: 10; 
+        }
+        
+        .ui-element { 
+            background: rgba(0,0,0,0.6); 
+            width: 140px;            
+            height: 42px;             
+            display: flex; 
+            align-items: center; 
+            justify-content: center;  
+            border-radius: 4px; 
+            border: 2px solid #333; 
+            font-size: 14px;          
+            font-weight: bold;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
 
     <div id="ui">
-        <div id="score">SCORE: 0</div>
-        <div id="mode" style="font-size: 14px; color: #00ffcc; margin-top: 5px;">ZONE: STREET LEVEL</div>
+        <div class="ui-element" id="score">SCORE: 0</div>
+        <div class="ui-element" id="mode" style="color: #00ffcc;">ZONE: STREET</div>
+        <div class="ui-element" id="highScore">BEST: 0</div>
     </div>
     <canvas id="gameCanvas"></canvas>
 
@@ -29,13 +59,18 @@ canvas.width = TARGET_WIDTH;
 canvas.height = TARGET_HEIGHT;
 
 let score = 0;
+let highScore = localStorage.getItem('breeze_high_score') ? parseInt(localStorage.getItem('breeze_high_score')) : 0;
 let isGameOver = false;
-let currentZone = 'STREET'; // 'STREET' or 'SKY'
+let currentZone = 'STREET'; 
 let zoneTimer = 0;
 
-let transitionProgress = 0; // 0 = gameplay, 1 = fully covered
-let transitionState = 'idle'; // 'idle', 'closing', 'opening'
-let pendingAction = null;
+//anti camping?
+let lastLane = 1;
+let framesInCurrentLane = 0;
+let laneCampModifier = 1.0;
+
+let transitionProgress = 0; 
+let transitionState = 'idle'; 
 
 const LANES_COUNT = 4;
 const LANE_WIDTH = TARGET_WIDTH / LANES_COUNT;
@@ -54,81 +89,148 @@ const player = {
 const MAX_OBSTACLES = 8;
 const obstaclePool = [];
 for (let i = 0; i < MAX_OBSTACLES; i++) {
-    obstaclePool.push({ active: false, x: 0, y: 0, w: 0, h: 0, speed: 0, type: 'car' });
+    obstaclePool.push({ active: false, x: 0, y: 0, w: 0, h: 0, speed: 0, type: 'car', lane: 0 });
 }
+
+document.getElementById('highScore').innerText = `BEST: ${highScore}`;
 
 function spawnObstacle() {
     const ob = obstaclePool.find(o => !o.active);
-    if (!ob) return; // Pool full, drop spawn to save memory
+    if (!ob) return; 
 
-    const lane = Math.floor(Math.random() * LANES_COUNT);
+    // Pure random baseline lane assignment (0 to 3) {still doesn't work}
+    let targetLane = Math.floor(Math.random() * LANES_COUNT);
+    
+    // Apply camping hunting (need to see this)
+    if (framesInCurrentLane > 150 && Math.random() < 0.6) {
+        targetLane = playerLane;
+    }
+    
+    let isLaneBlocked = obstaclePool.some(o => o.active && o.lane === targetLane && o.y < 160);
+    if (isLaneBlocked) {
+        let openLanes = [];
+        for (let l = 0; l < LANES_COUNT; l++) {
+            if (!obstaclePool.some(o => o.active && o.lane === l && o.y < 160)) {
+                openLanes.push(l);
+            }
+        }
+        if (openLanes.length > 0) {
+            targetLane = openLanes[Math.floor(Math.random() * openLanes.length)];
+        } else {
+            return; 
+        }
+    }
+    
+    let dynamicSpeedModifier = (targetLane === playerLane) ? laneCampModifier : 1.0;
+
     ob.active = true;
-    ob.w = LANE_WIDTH * 0.5;
-    ob.h = currentZone === 'STREET' ? 50 : 70; 
-    ob.x = (lane * LANE_WIDTH) + (LANE_WIDTH / 2) - (ob.w / 2);
+    ob.lane = targetLane;
+    ob.w = LANE_WIDTH * 0.55;
+    ob.h = currentZone === 'STREET' ? 50 : 85; 
+    ob.x = (targetLane * LANE_WIDTH) + (LANE_WIDTH / 2) - (ob.w / 2);
     ob.y = -ob.h;
-    ob.speed = currentZone === 'STREET' ? 5 + (score * 0.002) : 7 + (score * 0.003);
+    
+    let baseSpeed = currentZone === 'STREET' ? 5 + (score * 0.005) : 7 + (score * 0.007);
+    ob.speed = baseSpeed * dynamicSpeedModifier;
     ob.type = currentZone === 'STREET' ? 'car' : 'building';
 }
 
-window.addEventListener('keydown', (e) => {
-    if (isGameOver && transitionState === 'idle') {
-        triggerTransition(() => resetGame());
-        return;
-    }
-    if (e.key === 'ArrowLeft' && playerLane > 0) playerLane--;
-    if (e.key === 'ArrowRight' && playerLane < LANES_COUNT - 1) playerLane++;
+function handleInputLeft() {
+    if (isGameOver) return; 
+    if (playerLane > 0) playerLane--;
     targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+}
+
+function handleInputRight() {
+    if (isGameOver) return; 
+    if (playerLane < LANES_COUNT - 1) playerLane++;
+    targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') handleInputLeft();
+    if (e.key === 'ArrowRight') handleInputRight();
+    if (e.key === 'Enter' && isGameOver && transitionState === 'closed') {
+        transitionState = 'opening';
+        resetGame();
+    }
 });
 
 window.addEventListener('pointerdown', (e) => {
-    if (isGameOver && transitionState === 'idle') {
-        triggerTransition(() => resetGame());
+    if (isGameOver && transitionState === 'closed') {
+        transitionState = 'opening';
+        resetGame();
         return;
     }
     const clickX = e.clientX - canvas.getBoundingClientRect().left;
-    if (clickX < canvas.width / 2 && playerLane > 0) playerLane--;
-    if (clickX >= canvas.width / 2 && playerLane < LANES_COUNT - 1) playerLane++;
-    targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+    if (clickX < canvas.width / 2) {
+        handleInputLeft();
+    } else {
+        handleInputRight();
+    }
 });
 
-let spawnCooldown = 0;
+let spawnCooldown = 40; 
 
 function update() {
     if (transitionState === 'closing') {
-        transitionProgress += 0.05;
+        transitionProgress += 0.04; 
         if (transitionProgress >= 1) {
             transitionProgress = 1;
-            transitionState = 'opening';
-            if (pendingAction) { pendingAction(); pendingAction = null; }
+            transitionState = 'closed'; 
         }
         return; 
     }
     if (transitionState === 'opening') {
-        transitionProgress -= 0.05;
-        if (transitionProgress <= 0) { transitionProgress = 0; transitionState = 'idle'; }
+        transitionProgress -= 0.04;
+        if (transitionProgress <= 0) { 
+            transitionProgress = 0; 
+            transitionState = 'idle'; 
+        }
     }
+    
     if (isGameOver) return;
+
+   //broken logic actually need to fix 
+    if (playerLane === lastLane) {
+        if (score > 10) {
+            framesInCurrentLane++;
+            if (framesInCurrentLane > 150) {
+                laneCampModifier = Math.min(2.0, 1.0 + (framesInCurrentLane - 150) * 0.005);
+            }
+        }
+    } else {
+        framesInCurrentLane = 0;
+        laneCampModifier = 1.0;
+        lastLane = playerLane;
+    }
 
     player.x += (targetX - player.x) * 0.25;
 
-    // Track score and zone progression
-    score++;
-    zoneTimer++;
-    document.getElementById('score').innerText = `SCORE: ${score}`;
+    score += 0.2;
+    let displayScore = Math.floor(score);
+    document.getElementById('score').innerText = `SCORE: ${displayScore}`;
 
-    // Morph logic
-    if (zoneTimer > 800) {
+    if (displayScore > highScore) {
+        highScore = displayScore;
+        localStorage.setItem('breeze_high_score', highScore);
+        document.getElementById('highScore').innerText = `BEST: ${highScore}`;
+    }
+
+    zoneTimer++;
+    if (zoneTimer > 600) {
         currentZone = currentZone === 'STREET' ? 'SKY' : 'STREET';
-        document.getElementById('mode').innerText = currentZone === 'STREET' ? 'ZONE: STREET LEVEL' : 'ZONE: ROOFTOP GLIDER';
-        document.getElementById('mode').style.color = currentZone === 'STREET' ? '#00ffcc' : '#ff00aa';
+        const modeEl = document.getElementById('mode');
+        modeEl.innerText = currentZone === 'STREET' ? 'ZONE: STREET' : 'ZONE: SKY';
+        modeEl.style.color = currentZone === 'STREET' ? '#00ffcc' : '#ff00aa';
         zoneTimer = 0;
     }
 
     spawnCooldown--;
     if (spawnCooldown <= 0) {
         spawnObstacle();
-        spawnCooldown = currentZone === 'STREET' ? 45 + Math.random() * 30 : 30 + Math.random() * 20;
+        let baseCooldown = currentZone === 'STREET' ? 45 : 30;
+        spawnCooldown = (baseCooldown / laneCampModifier) + Math.random() * 20;
     }
 
     for (let i = 0; i < MAX_OBSTACLES; i++) {
@@ -137,12 +239,12 @@ function update() {
 
         ob.y += ob.speed;
 
-        // check collision (AABB)
         if (player.x - player.w/2 < ob.x + ob.w &&
             player.x + player.w/2 > ob.x &&
             player.y < ob.y + ob.h &&
             player.y + player.h > ob.y) {
                 isGameOver = true;
+                transitionState = 'closing'; 
         }
 
         if (ob.y > TARGET_HEIGHT) ob.active = false;
@@ -152,8 +254,7 @@ function update() {
 function draw() {
     ctx.clearRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
 
-    // Lane markings
-    ctx.strokeStyle = currentZone === 'STREET' ? 'rgba(255,255,255,0.05)' : 'rgba(255,0,170,0.08)';
+    ctx.strokeStyle = currentZone === 'STREET' ? 'rgba(255,255,255,0.04)' : 'rgba(255,0,170,0.06)';
     ctx.lineWidth = 2;
     for (let i = 1; i < LANES_COUNT; i++) {
         ctx.beginPath();
@@ -173,9 +274,10 @@ function draw() {
             ctx.fillRect(ob.x + 4, ob.y + ob.h - 6, 6, 6);
             ctx.fillRect(ob.x + ob.w - 10, ob.y + ob.h - 6, 6, 6);
         } else {
-            ctx.fillStyle = '#3a005c';
+            ctx.fillStyle = '#1e0030';
             ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
             ctx.strokeStyle = '#ff00aa';
+            ctx.lineWidth = 3;
             ctx.strokeRect(ob.x, ob.y, ob.w, ob.h);
         }
     }
@@ -183,13 +285,11 @@ function draw() {
     ctx.save();
     ctx.translate(player.x, player.y + player.h / 2);
     if (currentZone === 'STREET') {
-        // Vehicle form
         ctx.fillStyle = '#00ffcc';
         ctx.fillRect(-player.w / 2, -player.h / 2, player.w, player.h);
         ctx.fillStyle = '#ffffff'; 
         ctx.fillRect(-player.w / 2 + 3, -player.h / 2 + 8, player.w - 6, 8);
     } else {
-        // High-speed glider form (Delta Wing)
         ctx.fillStyle = '#ff00aa';
         ctx.beginPath();
         ctx.moveTo(0, -player.h / 2); 
@@ -202,37 +302,47 @@ function draw() {
     }
     ctx.restore();
 
-    // game over
-    if (isGameOver && transitionState === 'idle') {
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
-        ctx.fillStyle = '#fff';
-        ctx.font = '24px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText("CRASH DETECTED", TARGET_WIDTH / 2, TARGET_HEIGHT / 2 - 20);
-        ctx.font = '14px monospace';
-        ctx.fillText("TAP OR PRESS ANY KEY TO RESTART", TARGET_WIDTH / 2, TARGET_HEIGHT / 2 + 20);
-    }
-
+    //draw image and add later 
     if (transitionProgress > 0) {
-        ctx.fillStyle = '#e6f2ff';
+        ctx.fillStyle = '#e6f2ff'; 
         
-        ctx.fillRect(0, 0, (TARGET_WIDTH / 2) * transitionProgress, TARGET_HEIGHT);
-       
-        ctx.fillRect(TARGET_WIDTH - ((TARGET_WIDTH / 2) * transitionProgress), 0, TARGET_WIDTH / 2, TARGET_HEIGHT);
-        if (transitionProgress > 0.8) {
+        let leftEdge = (TARGET_WIDTH / 2) * transitionProgress;
+        let rightEdge = TARGET_WIDTH - ((TARGET_WIDTH / 2) * transitionProgress);
+
+        ctx.fillRect(0, 0, leftEdge, TARGET_HEIGHT);
+        ctx.fillRect(rightEdge, 0, TARGET_WIDTH / 2, TARGET_HEIGHT);
+
+        if (transitionProgress > 0.8 && transitionState !== 'closed') {
             ctx.strokeStyle = '#ffffff';
             ctx.lineWidth = 6;
             ctx.beginPath();
             ctx.arc(TARGET_WIDTH / 2, TARGET_HEIGHT / 2, 40 * (1 - (transitionProgress - 0.8) * 5), 0, Math.PI * 1.5);
             ctx.stroke();
         }
-    }
-}
 
-function triggerTransition(action) {
-    transitionState = 'closing';
-    pendingAction = action;
+        if (transitionState === 'closed' && isGameOver) {
+            ctx.fillStyle = 'rgba(17, 20, 26, 0.9)';
+            ctx.fillRect(TARGET_WIDTH / 2 - 170, TARGET_HEIGHT / 2 - 130, 340, 260);
+            ctx.strokeStyle = '#ff00aa';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(TARGET_WIDTH / 2 - 170, TARGET_HEIGHT / 2 - 130, 340, 260);
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 24px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText("CRASH DETECTED", TARGET_WIDTH / 2, TARGET_HEIGHT / 2 - 80);
+            
+            ctx.font = '18px monospace';
+            ctx.fillStyle = '#00ffcc';
+            ctx.fillText(`SCORE: ${Math.floor(score)}`, TARGET_WIDTH / 2, TARGET_HEIGHT / 2 - 20);
+            ctx.fillStyle = '#ff00aa';
+            ctx.fillText(`BEST TIME: ${highScore}`, TARGET_WIDTH / 2, TARGET_HEIGHT / 2 + 15);
+            
+            ctx.font = 'bold 12px monospace';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText("PRESS ENTER OR TAP TO RIDE AGAIN", TARGET_WIDTH / 2, TARGET_HEIGHT / 2 + 80);
+        }
+    }
 }
 
 function resetGame() {
@@ -243,8 +353,11 @@ function resetGame() {
     playerLane = 1;
     targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
     player.x = targetX;
+    framesInCurrentLane = 0;
+    laneCampModifier = 1.0;
+    spawnCooldown = 40;
     obstaclePool.forEach(ob => ob.active = false);
-    document.getElementById('mode').innerText = 'ZONE: STREET LEVEL';
+    document.getElementById('mode').innerText = 'ZONE: STREET';
     document.getElementById('mode').style.color = '#00ffcc';
 }
 
