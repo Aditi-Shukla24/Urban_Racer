@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Breeze Browser - Urban Racer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; overflow: hidden; }
+        body, html { width: 100%; height: 100%; background: #111; font-family: monospace; }
+        #gameCanvas { display: block; margin: 0 auto; background: #1a1a1a; }
+        #ui { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 20px; pointer-events: none; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="score">SCORE: 0</div>
+        <div id="mode" style="font-size: 14px; color: #00ffcc; margin-top: 5px;">ZONE: STREET LEVEL</div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const TARGET_WIDTH = 480; 
+const TARGET_HEIGHT = 800;
+canvas.width = TARGET_WIDTH;
+canvas.height = TARGET_HEIGHT;
+
+let score = 0;
+let isGameOver = false;
+let currentZone = 'STREET'; // 'STREET' or 'SKY'
+let zoneTimer = 0;
+
+let transitionProgress = 0; // 0 = gameplay, 1 = fully covered
+let transitionState = 'idle'; // 'idle', 'closing', 'opening'
+let pendingAction = null;
+
+const LANES_COUNT = 4;
+const LANE_WIDTH = TARGET_WIDTH / LANES_COUNT;
+let playerLane = 1; 
+let targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+
+const player = {
+    x: targetX,
+    y: TARGET_HEIGHT - 120,
+    w: 24,
+    h: 40,
+    speed: 15,
+    color: '#00ffcc'
+};
+
+const MAX_OBSTACLES = 8;
+const obstaclePool = [];
+for (let i = 0; i < MAX_OBSTACLES; i++) {
+    obstaclePool.push({ active: false, x: 0, y: 0, w: 0, h: 0, speed: 0, type: 'car' });
+}
+
+function spawnObstacle() {
+    const ob = obstaclePool.find(o => !o.active);
+    if (!ob) return; // Pool full, drop spawn to save memory
+
+    const lane = Math.floor(Math.random() * LANES_COUNT);
+    ob.active = true;
+    ob.w = LANE_WIDTH * 0.5;
+    ob.h = currentZone === 'STREET' ? 50 : 70; 
+    ob.x = (lane * LANE_WIDTH) + (LANE_WIDTH / 2) - (ob.w / 2);
+    ob.y = -ob.h;
+    ob.speed = currentZone === 'STREET' ? 5 + (score * 0.002) : 7 + (score * 0.003);
+    ob.type = currentZone === 'STREET' ? 'car' : 'building';
+}
+
+window.addEventListener('keydown', (e) => {
+    if (isGameOver && transitionState === 'idle') {
+        triggerTransition(() => resetGame());
+        return;
+    }
+    if (e.key === 'ArrowLeft' && playerLane > 0) playerLane--;
+    if (e.key === 'ArrowRight' && playerLane < LANES_COUNT - 1) playerLane++;
+    targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+});
+
+window.addEventListener('pointerdown', (e) => {
+    if (isGameOver && transitionState === 'idle') {
+        triggerTransition(() => resetGame());
+        return;
+    }
+    const clickX = e.clientX - canvas.getBoundingClientRect().left;
+    if (clickX < canvas.width / 2 && playerLane > 0) playerLane--;
+    if (clickX >= canvas.width / 2 && playerLane < LANES_COUNT - 1) playerLane++;
+    targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+});
+
+let spawnCooldown = 0;
+
+function update() {
+    if (transitionState === 'closing') {
+        transitionProgress += 0.05;
+        if (transitionProgress >= 1) {
+            transitionProgress = 1;
+            transitionState = 'opening';
+            if (pendingAction) { pendingAction(); pendingAction = null; }
+        }
+        return; 
+    }
+    if (transitionState === 'opening') {
+        transitionProgress -= 0.05;
+        if (transitionProgress <= 0) { transitionProgress = 0; transitionState = 'idle'; }
+    }
+    if (isGameOver) return;
+
+    player.x += (targetX - player.x) * 0.25;
+
+    // Track score and zone progression
+    score++;
+    zoneTimer++;
+    document.getElementById('score').innerText = `SCORE: ${score}`;
+
+    // Morph logic
+    if (zoneTimer > 800) {
+        currentZone = currentZone === 'STREET' ? 'SKY' : 'STREET';
+        document.getElementById('mode').innerText = currentZone === 'STREET' ? 'ZONE: STREET LEVEL' : 'ZONE: ROOFTOP GLIDER';
+        document.getElementById('mode').style.color = currentZone === 'STREET' ? '#00ffcc' : '#ff00aa';
+        zoneTimer = 0;
+    }
+
+    spawnCooldown--;
+    if (spawnCooldown <= 0) {
+        spawnObstacle();
+        spawnCooldown = currentZone === 'STREET' ? 45 + Math.random() * 30 : 30 + Math.random() * 20;
+    }
+
+    for (let i = 0; i < MAX_OBSTACLES; i++) {
+        const ob = obstaclePool[i];
+        if (!ob.active) continue;
+
+        ob.y += ob.speed;
+
+        // check collision (AABB)
+        if (player.x - player.w/2 < ob.x + ob.w &&
+            player.x + player.w/2 > ob.x &&
+            player.y < ob.y + ob.h &&
+            player.y + player.h > ob.y) {
+                isGameOver = true;
+        }
+
+        if (ob.y > TARGET_HEIGHT) ob.active = false;
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+
+    // Lane markings
+    ctx.strokeStyle = currentZone === 'STREET' ? 'rgba(255,255,255,0.05)' : 'rgba(255,0,170,0.08)';
+    ctx.lineWidth = 2;
+    for (let i = 1; i < LANES_COUNT; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * LANE_WIDTH, 0);
+        ctx.lineTo(i * LANE_WIDTH, TARGET_HEIGHT);
+        ctx.stroke();
+    }
+
+    for (let i = 0; i < MAX_OBSTACLES; i++) {
+        const ob = obstaclePool[i];
+        if (!ob.active) continue;
+
+        if (ob.type === 'car') {
+            ctx.fillStyle = '#ff3333';
+            ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+            ctx.fillStyle = '#ffff00';
+            ctx.fillRect(ob.x + 4, ob.y + ob.h - 6, 6, 6);
+            ctx.fillRect(ob.x + ob.w - 10, ob.y + ob.h - 6, 6, 6);
+        } else {
+            ctx.fillStyle = '#3a005c';
+            ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+            ctx.strokeStyle = '#ff00aa';
+            ctx.strokeRect(ob.x, ob.y, ob.w, ob.h);
+        }
+    }
+
+    ctx.save();
+    ctx.translate(player.x, player.y + player.h / 2);
+    if (currentZone === 'STREET') {
+        // Vehicle form
+        ctx.fillStyle = '#00ffcc';
+        ctx.fillRect(-player.w / 2, -player.h / 2, player.w, player.h);
+        ctx.fillStyle = '#ffffff'; 
+        ctx.fillRect(-player.w / 2 + 3, -player.h / 2 + 8, player.w - 6, 8);
+    } else {
+        // High-speed glider form (Delta Wing)
+        ctx.fillStyle = '#ff00aa';
+        ctx.beginPath();
+        ctx.moveTo(0, -player.h / 2); 
+        ctx.lineTo(player.w, player.h / 2); 
+        ctx.lineTo(-player.w, player.h / 2); 
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#ffea00';
+        ctx.fillRect(-4, player.h / 2, 8, 6);
+    }
+    ctx.restore();
+
+    // game over
+    if (isGameOver && transitionState === 'idle') {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+        ctx.fillStyle = '#fff';
+        ctx.font = '24px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText("CRASH DETECTED", TARGET_WIDTH / 2, TARGET_HEIGHT / 2 - 20);
+        ctx.font = '14px monospace';
+        ctx.fillText("TAP OR PRESS ANY KEY TO RESTART", TARGET_WIDTH / 2, TARGET_HEIGHT / 2 + 20);
+    }
+
+    if (transitionProgress > 0) {
+        ctx.fillStyle = '#e6f2ff';
+        
+        ctx.fillRect(0, 0, (TARGET_WIDTH / 2) * transitionProgress, TARGET_HEIGHT);
+       
+        ctx.fillRect(TARGET_WIDTH - ((TARGET_WIDTH / 2) * transitionProgress), 0, TARGET_WIDTH / 2, TARGET_HEIGHT);
+        if (transitionProgress > 0.8) {
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.arc(TARGET_WIDTH / 2, TARGET_HEIGHT / 2, 40 * (1 - (transitionProgress - 0.8) * 5), 0, Math.PI * 1.5);
+            ctx.stroke();
+        }
+    }
+}
+
+function triggerTransition(action) {
+    transitionState = 'closing';
+    pendingAction = action;
+}
+
+function resetGame() {
+    score = 0;
+    isGameOver = false;
+    currentZone = 'STREET';
+    zoneTimer = 0;
+    playerLane = 1;
+    targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+    player.x = targetX;
+    obstaclePool.forEach(ob => ob.active = false);
+    document.getElementById('mode').innerText = 'ZONE: STREET LEVEL';
+    document.getElementById('mode').style.color = '#00ffcc';
+}
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
