@@ -64,18 +64,23 @@ let isGameOver = false;
 let currentZone = 'STREET'; 
 let zoneTimer = 0;
 
-//anti camping?
-let lastLane = 1;
+const LANES_COUNT = 4;
+const LANE_WIDTH = TARGET_WIDTH / LANES_COUNT;
+
+// works
+let playerLane = Math.floor(Math.random() * LANES_COUNT); 
+let targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
+let lastLane = playerLane; 
 let framesInCurrentLane = 0;
 let laneCampModifier = 1.0;
 
+let laneHazardState = 'idle'; // 'idle', 'warning', 'blocked'
+let activeHazardLane = -1;
+let laneHazardTimer = 0;
+let nextBlockCooldown = 300; // Gives space before the first challenge appears (should be changed?)
+
 let transitionProgress = 0; 
 let transitionState = 'idle'; 
-
-const LANES_COUNT = 4;
-const LANE_WIDTH = TARGET_WIDTH / LANES_COUNT;
-let playerLane = 1; 
-let targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
 
 const player = {
     x: targetX,
@@ -98,27 +103,41 @@ function spawnObstacle() {
     const ob = obstaclePool.find(o => !o.active);
     if (!ob) return; 
 
-    // Pure random baseline lane assignment (0 to 3) {still doesn't work}
-    let targetLane = Math.floor(Math.random() * LANES_COUNT);
+    let openLanes = [];
     
-    // Apply camping hunting (need to see this)
-    if (framesInCurrentLane > 150 && Math.random() < 0.6) {
-        targetLane = playerLane;
+    //Racing traffic flow algorithm (need more refinements)
+    for (let l = 0; l < LANES_COUNT; l++) {
+        if (l === activeHazardLane && laneHazardState === 'blocked') continue;
+        
+        // Check if there is already an active car sitting at the top of this specific lane
+        let laneOccupied = obstaclePool.some(o => o.active && o.lane === l && o.y < 220);
+        
+        // Prevent cars from spawning in adjacent lanes perfectly parallel to each other (can be included in difficulty?)
+        let adjacentClump = obstaclePool.some(o => o.active && Math.abs(o.lane - l) === 1 && o.y < 130);
+        
+        if (!laneOccupied && !adjacentClump) {
+            openLanes.push(l);
+        }
     }
     
-    let isLaneBlocked = obstaclePool.some(o => o.active && o.lane === targetLane && o.y < 160);
-    if (isLaneBlocked) {
-        let openLanes = [];
+    // Fail-safe backup fallback check: if spacing filters are too tight, just check absolute roof space (need to see this)
+    if (openLanes.length === 0) {
         for (let l = 0; l < LANES_COUNT; l++) {
-            if (!obstaclePool.some(o => o.active && o.lane === l && o.y < 160)) {
+            if (l === activeHazardLane && laneHazardState === 'blocked') continue;
+            if (!obstaclePool.some(o => o.active && o.lane === l && o.y < 180)) {
                 openLanes.push(l);
             }
         }
-        if (openLanes.length > 0) {
-            targetLane = openLanes[Math.floor(Math.random() * openLanes.length)];
-        } else {
-            return; 
-        }
+    }
+
+    if (openLanes.length === 0) return;
+
+    //now works 
+    let targetLane = openLanes[Math.floor(Math.random() * openLanes.length)];
+    
+    // Apply camping adjustment traps if logged (need to see this)
+    if (framesInCurrentLane > 150 && Math.random() < 0.5 && openLanes.includes(playerLane)) {
+        targetLane = playerLane;
     }
     
     let dynamicSpeedModifier = (targetLane === playerLane) ? laneCampModifier : 1.0;
@@ -130,7 +149,7 @@ function spawnObstacle() {
     ob.x = (targetLane * LANE_WIDTH) + (LANE_WIDTH / 2) - (ob.w / 2);
     ob.y = -ob.h;
     
-    let baseSpeed = currentZone === 'STREET' ? 5 + (score * 0.005) : 7 + (score * 0.007);
+    let baseSpeed = currentZone === 'STREET' ? 4.5 + (score * 0.004) : 6.5 + (score * 0.006);
     ob.speed = baseSpeed * dynamicSpeedModifier;
     ob.type = currentZone === 'STREET' ? 'car' : 'building';
 }
@@ -148,8 +167,8 @@ function handleInputRight() {
 }
 
 window.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowLeft') handleInputLeft();
-    if (e.key === 'ArrowRight') handleInputRight();
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') handleInputLeft();
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') handleInputRight();
     if (e.key === 'Enter' && isGameOver && transitionState === 'closed') {
         transitionState = 'opening';
         resetGame();
@@ -171,7 +190,7 @@ window.addEventListener('pointerdown', (e) => {
 });
 
 let spawnCooldown = 40; 
-
+//image add karna
 function update() {
     if (transitionState === 'closing') {
         transitionProgress += 0.04; 
@@ -191,18 +210,48 @@ function update() {
     
     if (isGameOver) return;
 
-   //broken logic actually need to fix 
     if (playerLane === lastLane) {
         if (score > 10) {
             framesInCurrentLane++;
             if (framesInCurrentLane > 150) {
-                laneCampModifier = Math.min(2.0, 1.0 + (framesInCurrentLane - 150) * 0.005);
+                laneCampModifier = Math.min(1.8, 1.0 + (framesInCurrentLane - 150) * 0.004);
             }
         }
     } else {
         framesInCurrentLane = 0;
         laneCampModifier = 1.0;
         lastLane = playerLane;
+    }
+
+    if (score >= 200) {
+        if (laneHazardState === 'idle') {
+            nextBlockCooldown--;
+            if (nextBlockCooldown <= 0) {
+                activeHazardLane = Math.floor(Math.random() * LANES_COUNT);
+                laneHazardState = 'warning';
+                laneHazardTimer = 90; // 90 frames = Exactly 3 blinks at 30 frames per complete cycle
+            }
+        } else if (laneHazardState === 'warning') {
+            laneHazardTimer--;
+            
+            if (laneHazardTimer <= 0) {
+                laneHazardState = 'blocked';
+                laneHazardTimer = 300; // 300 frames = 5 sec lockdown
+            }
+        } else if (laneHazardState === 'blocked') {
+            laneHazardTimer--;
+           
+            if (playerLane === activeHazardLane) {
+                isGameOver = true;
+                transitionState = 'closing';
+            }
+            
+            if (laneHazardTimer <= 0) {
+                laneHazardState = 'idle';
+                activeHazardLane = -1;
+                nextBlockCooldown = 240 + Math.random() * 180; 
+            }
+        }
     }
 
     player.x += (targetX - player.x) * 0.25;
@@ -229,8 +278,8 @@ function update() {
     spawnCooldown--;
     if (spawnCooldown <= 0) {
         spawnObstacle();
-        let baseCooldown = currentZone === 'STREET' ? 45 : 30;
-        spawnCooldown = (baseCooldown / laneCampModifier) + Math.random() * 20;
+        let baseCooldown = currentZone === 'STREET' ? 55 : 40; 
+        spawnCooldown = (baseCooldown / laneCampModifier) + Math.random() * 15;
     }
 
     for (let i = 0; i < MAX_OBSTACLES; i++) {
@@ -263,6 +312,39 @@ function draw() {
         ctx.stroke();
     }
 
+    if (score >= 200 && activeHazardLane !== -1) {
+        if (laneHazardState === 'warning') {
+        
+            let isFlashVisible = Math.floor(laneHazardTimer / 15) % 2 === 0;
+            if (isFlashVisible) {
+                ctx.fillStyle = 'rgba(255, 17, 85, 0.2)'; 
+                ctx.fillRect(activeHazardLane * LANE_WIDTH, 0, LANE_WIDTH, TARGET_HEIGHT);
+                ctx.strokeStyle = 'rgba(255, 17, 85, 0.5)';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(activeHazardLane * LANE_WIDTH + 2, 0, LANE_WIDTH - 4, TARGET_HEIGHT);
+            }
+        } else if (laneHazardState === 'blocked') {
+            ctx.fillStyle = 'rgba(230, 0, 40, 0.35)'; 
+            ctx.fillRect(activeHazardLane * LANE_WIDTH, 0, LANE_WIDTH, TARGET_HEIGHT);
+            ctx.strokeStyle = 'rgba(255, 0, 50, 0.8)';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(activeHazardLane * LANE_WIDTH + 2, 0, LANE_WIDTH - 4, TARGET_HEIGHT);
+            
+            ctx.save();
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 15px monospace';
+            ctx.textAlign = 'center';
+            ctx.shadowColor = '#ff0033';
+            ctx.shadowBlur = 6;
+            
+            let centerTextX = activeHazardLane * LANE_WIDTH + LANE_WIDTH / 2;
+            ctx.fillText("LANE", centerTextX, TARGET_HEIGHT / 2 - 30);
+            ctx.fillText("BLOCKED!", centerTextX, TARGET_HEIGHT / 2 - 10);
+            ctx.fillText("⚠️", centerTextX, TARGET_HEIGHT / 2 + 20);
+            ctx.restore();
+        }
+    }
+//traffic
     for (let i = 0; i < MAX_OBSTACLES; i++) {
         const ob = obstaclePool[i];
         if (!ob.active) continue;
@@ -281,7 +363,7 @@ function draw() {
             ctx.strokeRect(ob.x, ob.y, ob.w, ob.h);
         }
     }
-
+    
     ctx.save();
     ctx.translate(player.x, player.y + player.h / 2);
     if (currentZone === 'STREET') {
@@ -302,7 +384,6 @@ function draw() {
     }
     ctx.restore();
 
-    //draw image and add later 
     if (transitionProgress > 0) {
         ctx.fillStyle = '#e6f2ff'; 
         
@@ -350,11 +431,19 @@ function resetGame() {
     isGameOver = false;
     currentZone = 'STREET';
     zoneTimer = 0;
-    playerLane = 1;
+    
+    playerLane = Math.floor(Math.random() * LANES_COUNT);
     targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
     player.x = targetX;
+    lastLane = playerLane; 
     framesInCurrentLane = 0;
     laneCampModifier = 1.0;
+    
+    laneHazardState = 'idle';
+    activeHazardLane = -1;
+    laneHazardTimer = 0;
+    nextBlockCooldown = 300;
+    
     spawnCooldown = 40;
     obstaclePool.forEach(ob => ob.active = false);
     document.getElementById('mode').innerText = 'ZONE: STREET';
