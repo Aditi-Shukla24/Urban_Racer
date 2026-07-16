@@ -2,52 +2,84 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Breeze Browser - Urban Racer</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; overflow: hidden; }
-        body, html { width: 100%; height: 100%; background: #111; font-family: monospace; }
-        #gameCanvas { display: block; margin: 0 auto; background: #1a1a1a; }
+        
+        body, html { 
+            width: 100%; 
+            height: 100%; 
+            background: #111; 
+            font-family: monospace; 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-width: 480px;  
+            max-height: 800px; 
+            aspect-ratio: 3 / 5; 
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.7);
+        }
+
+        #gameCanvas { 
+            display: block; 
+            width: 100%;
+            height: 100%;
+            background: #1a1a1a; 
+        }
         
         #ui { 
             position: absolute; 
-            top: 20px; 
-            left: 50%; 
-            transform: translateX(-50%); 
-            color: #fff; 
-            pointer-events: none; 
+            top: 3%; 
+            left: 0; 
             width: 100%; 
-            max-width: 460px; 
+            pointer-events: none; 
             display: flex; 
             justify-content: space-between; 
             align-items: center; 
-            padding: 0 10px; 
+            padding: 0 4%; 
             z-index: 10; 
         }
         
         .ui-element { 
             background: rgba(0,0,0,0.6); 
-            width: 140px;            
-            height: 42px;             
+            width: 30%;            
+            height: 36px;             
             display: flex; 
             align-items: center; 
             justify-content: center;  
             border-radius: 4px; 
             border: 2px solid #333; 
-            font-size: 14px;          
+            font-size: 11px;          
             font-weight: bold;
             text-align: center;
+            color: #ffffff; /*fixed the black text bug */
+        }
+
+        @media (min-width: 400px) {
+            .ui-element {
+                font-size: 13px;
+                height: 42px;
+            }
         }
     </style>
 </head>
 <body>
 
-    <div id="ui">
-        <div class="ui-element" id="score">SCORE: 0</div>
-        <div class="ui-element" id="mode" style="color: #00ffcc;">ZONE: STREET</div>
-        <div class="ui-element" id="highScore">BEST: 0</div>
+    <div id="game-container">
+        <div id="ui">
+            <div class="ui-element" id="score">SCORE: 0</div>
+            <div class="ui-element" id="mode" style="color: #00ffcc;">ZONE: STREET</div>
+            <div class="ui-element" id="highScore">BEST: 0</div>
+        </div>
+        <canvas id="gameCanvas"></canvas>
     </div>
-    <canvas id="gameCanvas"></canvas>
 
 <script>
 const canvas = document.getElementById('gameCanvas');
@@ -67,17 +99,16 @@ let zoneTimer = 0;
 const LANES_COUNT = 4;
 const LANE_WIDTH = TARGET_WIDTH / LANES_COUNT;
 
-// works
 let playerLane = Math.floor(Math.random() * LANES_COUNT); 
 let targetX = (playerLane * LANE_WIDTH) + (LANE_WIDTH / 2);
 let lastLane = playerLane; 
 let framesInCurrentLane = 0;
 let laneCampModifier = 1.0;
 
-let laneHazardState = 'idle'; // 'idle', 'warning', 'blocked'
+let laneHazardState = 'idle'; 
 let activeHazardLane = -1;
 let laneHazardTimer = 0;
-let nextBlockCooldown = 300; // Gives space before the first challenge appears (should be changed?)
+let nextBlockCooldown = 300;  // Gives space before the first challenge appears (should be changed?)
 
 let transitionProgress = 0; 
 let transitionState = 'idle'; 
@@ -104,15 +135,10 @@ function spawnObstacle() {
     if (!ob) return; 
 
     let openLanes = [];
-    
     //Racing traffic flow algorithm (need more refinements)
     for (let l = 0; l < LANES_COUNT; l++) {
         if (l === activeHazardLane && laneHazardState === 'blocked') continue;
-        
-        // Check if there is already an active car sitting at the top of this specific lane
         let laneOccupied = obstaclePool.some(o => o.active && o.lane === l && o.y < 220);
-        
-        // Prevent cars from spawning in adjacent lanes perfectly parallel to each other (can be included in difficulty?)
         let adjacentClump = obstaclePool.some(o => o.active && Math.abs(o.lane - l) === 1 && o.y < 130);
         
         if (!laneOccupied && !adjacentClump) {
@@ -120,7 +146,6 @@ function spawnObstacle() {
         }
     }
     
-    // Fail-safe backup fallback check: if spacing filters are too tight, just check absolute roof space (need to see this)
     if (openLanes.length === 0) {
         for (let l = 0; l < LANES_COUNT; l++) {
             if (l === activeHazardLane && laneHazardState === 'blocked') continue;
@@ -132,9 +157,7 @@ function spawnObstacle() {
 
     if (openLanes.length === 0) return;
 
-    //now works 
     let targetLane = openLanes[Math.floor(Math.random() * openLanes.length)];
-    
     // Apply camping adjustment traps if logged (need to see this)
     if (framesInCurrentLane > 150 && Math.random() < 0.5 && openLanes.includes(playerLane)) {
         targetLane = playerLane;
@@ -181,8 +204,12 @@ window.addEventListener('pointerdown', (e) => {
         resetGame();
         return;
     }
-    const clickX = e.clientX - canvas.getBoundingClientRect().left;
-    if (clickX < canvas.width / 2) {
+    
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const actualCanvasWidth = rect.width;
+    
+    if (clickX < actualCanvasWidth / 2) {
         handleInputLeft();
     } else {
         handleInputRight();
@@ -190,7 +217,7 @@ window.addEventListener('pointerdown', (e) => {
 });
 
 let spawnCooldown = 40; 
-//image add karna
+//image
 function update() {
     if (transitionState === 'closing') {
         transitionProgress += 0.04; 
@@ -229,18 +256,17 @@ function update() {
             if (nextBlockCooldown <= 0) {
                 activeHazardLane = Math.floor(Math.random() * LANES_COUNT);
                 laneHazardState = 'warning';
-                laneHazardTimer = 90; // 90 frames = Exactly 3 blinks at 30 frames per complete cycle
-            }
+                laneHazardTimer = 90; 
+            }// 90 frames = Exactly 3 blinks at 30 frames per complete cycle
         } else if (laneHazardState === 'warning') {
             laneHazardTimer--;
-            
             if (laneHazardTimer <= 0) {
                 laneHazardState = 'blocked';
-                laneHazardTimer = 300; // 300 frames = 5 sec lockdown
+                laneHazardTimer = 300; //5sec
             }
         } else if (laneHazardState === 'blocked') {
             laneHazardTimer--;
-           
+            
             if (playerLane === activeHazardLane) {
                 isGameOver = true;
                 transitionState = 'closing';
@@ -314,7 +340,6 @@ function draw() {
 
     if (score >= 200 && activeHazardLane !== -1) {
         if (laneHazardState === 'warning') {
-        
             let isFlashVisible = Math.floor(laneHazardTimer / 15) % 2 === 0;
             if (isFlashVisible) {
                 ctx.fillStyle = 'rgba(255, 17, 85, 0.2)'; 
@@ -344,7 +369,7 @@ function draw() {
             ctx.restore();
         }
     }
-//traffic
+
     for (let i = 0; i < MAX_OBSTACLES; i++) {
         const ob = obstaclePool[i];
         if (!ob.active) continue;
@@ -363,7 +388,7 @@ function draw() {
             ctx.strokeRect(ob.x, ob.y, ob.w, ob.h);
         }
     }
-    
+
     ctx.save();
     ctx.translate(player.x, player.y + player.h / 2);
     if (currentZone === 'STREET') {
